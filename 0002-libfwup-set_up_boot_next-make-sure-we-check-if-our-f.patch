@@ -1,0 +1,61 @@
+From a0c57f8759a0548aa7f0334f6839156b1456bb2a Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Wed, 13 Jun 2018 09:57:49 -0400
+Subject: [PATCH 2/2] libfwup: set_up_boot_next(): make sure we check if our
+ file paths are NULL.
+
+Coverity's clang scan believes we can sometimes alloca(0) if
+fwup_esp_path is NULL, though I don't think this can happen because if
+it is NULL get_paths() should have returned error.  Nevertheless, just
+check both things.
+
+Additionally, this adds a check to make sure utf8_to_ucs2() and
+ucs2len() didn't fail.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ linux/libfwup.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/linux/libfwup.c b/linux/libfwup.c
+index abab18e96ac..61a9d280c32 100644
+--- a/linux/libfwup.c
++++ b/linux/libfwup.c
+@@ -1215,9 +1215,9 @@ set_up_boot_next(void)
+ 	uint32_t attributes = LOAD_OPTION_ACTIVE;
+ 
+ 	rc = get_paths(&shim_fs_path, &fwup_fs_path, &fwup_esp_path);
+-	if (rc < 0) {
++	if (rc < 0 || (!shim_fs_path && (!fwup_fs_path || !fwup_esp_path))) {
+ 		efi_error("could not find paths for shim and fwup");
+-		return -1;
++                goto out;
+ 	}
+ 
+ 	if (!shim_fs_path)
+@@ -1242,9 +1242,20 @@ set_up_boot_next(void)
+ 
+ 	if (!use_fwup_path) {
+ 		loader_str = utf8_to_ucs2((uint8_t *)fwup_esp_path, -1);
++		if (loader_str == NULL) {
++			efi_error("utf8_to_ucs2() failed");
++			goto out;
++		}
+ 		loader_sz = ucs2len(loader_str, -1) * 2;
+-		if (loader_sz)
+-			loader_sz += 2;
++		if (loader_sz < 2) {
++			efi_error("ucs2len(fwup_esp_path) returned %zu",
++				  loader_sz);
++			saved_errno = errno;
++			free(loader_str);
++			errno = saved_errno;
++			goto out;
++		}
++		loader_sz += 2;
+ 		loader_str = onstack(loader_str, loader_sz);
+ 	}
+ 
+-- 
+2.17.1
+

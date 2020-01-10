@@ -1,0 +1,25 @@
+From 6101b6b304da06644bd7a90444f729d0fc44940e Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Thu, 28 Jun 2018 14:00:19 -0400
+Subject: [PATCH] Actually add fwup_version to our exposed API list.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ linux/libfwup.map.in | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/linux/libfwup.map.in b/linux/libfwup.map.in
+index 8746b7a46cc..df9395ce705 100644
+--- a/linux/libfwup.map.in
++++ b/linux/libfwup.map.in
+@@ -30,3 +30,7 @@ LIBFWUP_1.11 {
+ 	global: fwup_set_guid_forced;
+ 		fwup_resource_free;
+ } libfwup.so.1;
++
++LIBFWUP_1.12 {
++	global: fwup_version;
++} LIBFWUP_1.11;
+-- 
+2.17.1
+

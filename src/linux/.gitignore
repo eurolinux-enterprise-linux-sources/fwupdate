@@ -1,0 +1,7 @@
+fwupdate
+lib*.so.*
+tester
+*.po
+lib*.map
+cleanup.service
+cleanup
