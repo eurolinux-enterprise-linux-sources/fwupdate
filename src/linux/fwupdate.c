@@ -8,8 +8,6 @@
  * Author: Peter Jones <pjones@redhat.com>
  */
 
-#include "fix_coverity.h"
-
 #include <efivar.h>
 #include <err.h>
 #include <inttypes.h>
@@ -25,7 +23,10 @@
 #include <fwup.h>
 #include "util.h"
 #include "error.h"
-#include "ucs2.h"
+
+#define CAPSULE_FLAGS_PERSIST_ACROSS_RESET    0x00010000
+#define CAPSULE_FLAGS_POPULATE_SYSTEM_TABLE   0x00020000
+#define CAPSULE_FLAGS_INITIATE_RESET          0x00040000
 
 int verbose = 0;
 int quiet = 0;
@@ -49,39 +50,19 @@ print_system_resources(void)
 		char *id_guid = NULL;
 		uint32_t vers;
 		uint32_t lowest;
-		uint32_t type;
-		char *str_type;
 
 		fwup_get_guid(re, &guid);
 		rc = efi_guid_to_id_guid(guid, &id_guid);
 		if (rc < 0) {
-			efi_error(_("%s failed."), "efi_guid_to_id_guid");
+			efi_error("efi_guid_to_id_guid failed");
 			return -1;
 		}
 
 		fwup_get_fw_version(re, &vers);
 		fwup_get_lowest_supported_fw_version(re, &lowest);
-		fwup_get_fw_type(re, &type);
-		switch (type) {
-		case FWUP_RESOURCE_TYPE_UNKNOWN:
-			str_type = "Unknown";
-			break;
-		case FWUP_RESOURCE_TYPE_SYSTEM_FIRMWARE:
-			str_type = "System Firmware";
-			break;
-		case FWUP_RESOURCE_TYPE_DEVICE_FIRMWARE:
-			str_type = "Device Firmware";
-			break;
-		case FWUP_RESOURCE_TYPE_UEFI_DRIVER:
-			str_type = "UEFI Driver";
-			break;
-		default:
-			str_type = EMPTY;
-			break;
-		}
 
-		printf(_("%s type, %s version %u can be updated to any version above %d\n"),
-			str_type , id_guid, vers, lowest-1);
+		printf(_("%s version %d can be updated to any version above %d\n"),
+			id_guid, vers, lowest-1);
 		free(id_guid);
 	}
 
@@ -91,85 +72,23 @@ print_system_resources(void)
 	return 0;
 }
 
-static void
-set_debug_flag(int8_t set_debug)
-{
-	int rc;
-	uint8_t *data;
-	size_t size;
-	uint32_t attributes;
-	const char *name = "FWUPDATE_VERBOSE";
-	efi_guid_t fwupdate_guid = FWUPDATE_GUID;
-
-	if (set_debug == -1)
-		return;
-
-	rc = efi_get_variable(fwupdate_guid, name, &data, &size, &attributes);
-	if (rc >= 0) {
-		if (size == 1 && *(int *)data == set_debug)
-			return;
-		efi_del_variable(fwupdate_guid, name);
-		printf(_("Disabled fwupdate debugging\n"));
-	}
-
-	if (set_debug <= 0)
-		return;
-
-	attributes = EFI_VARIABLE_NON_VOLATILE |
-		     EFI_VARIABLE_BOOTSERVICE_ACCESS |
-		     EFI_VARIABLE_RUNTIME_ACCESS;
-
-	rc = efi_set_variable(fwupdate_guid, name,
-			      (uint8_t *)&set_debug, sizeof(set_debug),
-			      attributes, 0644);
-	if (rc < 0)
-		printf(_("Could not enable fwupdate debugging\n"));
-	else
-		printf(_("Enabled fwupdate debugging\n"));
-}
-
-static void
-dump_log(void)
-{
-	int rc;
-	char *utf8 = NULL;
-	size_t size = 0;
-
-	rc = fwup_get_debug_log(&utf8, &size);
-	if (rc < 0) {
-		if (errno == ENOENT) {
-			printf(_("No debug log found\n"));
-			return;
-		}
-		error(1, _("Could not get debug log"));
-	}
-
-	printf("%s", utf8);
-	free(utf8);
-}
-
 #define ACTION_APPLY		0x01
 #define ACTION_LIST		0x02
 #define ACTION_SUPPORTED	0x04
 #define ACTION_INFO		0x08
 #define ACTION_ENABLE		0x10
-#define ACTION_VERSION		0x20
-#define ACTION_SHOW_LOG		0x40
 
 int
 main(int argc, char *argv[]) {
 	int action = 0;
 	int force = 0;
-	int set_debug = -1;
-	int use_existing_media_path = 1;
-	char *esp_path = FWUP_ESP_MOUNTPOINT;
 
 	const char *guidstr = NULL;
 	const char *filename = NULL;
 
 	efi_guid_t guid;
 
-	setlocale(LC_ALL, EMPTY);
+	setlocale(LC_ALL, "");
 	bindtextdomain("fwupdate", LOCALEDIR);
 	textdomain("fwupdate");
 
@@ -189,13 +108,6 @@ main(int argc, char *argv[]) {
 		 .arg = &action,
 		 .val = ACTION_LIST,
 		 .descrip = _("List supported firmware updates") },
-		{.longName = "log",
-		 .shortName = 'L',
-		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OR,
-		 .arg = &action,
-		 .val = ACTION_SHOW_LOG,
-		 .descrip = _("Show the debug log from the last attempted update"),
-		},
 		{.longName = "supported",
 		 .shortName = 's',
 		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OR,
@@ -215,13 +127,6 @@ main(int argc, char *argv[]) {
 		 .arg = &action,
 		 .val = ACTION_ENABLE,
 		 .descrip = _("Enable firmware update support on supported systems (will require a reboot)") },
-		{.longName = "version",
-		 .shortName = '\0',
-		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OPTIONAL,
-		 .arg = &action,
-		 .val = ACTION_VERSION,
-		 .descrip = _("Display version"),
-		},
 		{.longName = "quiet",
 		 .shortName = 'q',
 		 .argInfo = POPT_ARG_VAL,
@@ -234,33 +139,6 @@ main(int argc, char *argv[]) {
 		 .arg = &force,
 		 .val = 1,
 		 .descrip = _("Forces flash even if GUID isn't in ESRT.") },
-		{.longName = "esp-path",
-		 .shortName = 'p',
-		 .argInfo = POPT_ARG_STRING|POPT_ARGFLAG_SHOW_DEFAULT,
-		 .arg = &esp_path,
-		 .val = 0,
-		 .descrip = _("Override the default ESP path"),
-		 .argDescrip = "<esp-path>"},
-		{.longName = "dont-use-existing-media-path",
-		 .shortName = 'F',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &use_existing_media_path,
-		 .val = 0,
-		 .descrip = _("Don't reuse the filename for this GUID from previous updates") },
-		{.longName = "set-debug",
-		 .shortName = 'd',
-		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OPTIONAL,
-		 .arg = &set_debug,
-		 .val = 1,
-		 .descrip = _("Set the debugging flag during update"),
-		},
-		{.longName = "unset-debug",
-		 .shortName = 'D',
-		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OPTIONAL,
-		 .arg = &set_debug,
-		 .val = 0,
-		 .descrip = _("Set the debugging flag during update"),
-		},
 		{.longName = "verbose",
 		 .shortName = 'v',
 		 .argInfo = POPT_ARG_VAL|POPT_ARGFLAG_OPTIONAL,
@@ -279,18 +157,11 @@ main(int argc, char *argv[]) {
 	int rc;
 	rc = poptReadDefaultConfig(optcon, 0);
 	if (rc < 0 && !(rc == POPT_ERROR_ERRNO && errno == ENOENT))
-		errorx(1, _("%s failed: %s: %s"), "poptReadDefaultConfig",
-		       poptBadOption(optcon, 0), poptStrerror(rc));
+		errorx(1, _("poptReadDefaultConfig failed: %s: %s"),
+			poptBadOption(optcon, 0), poptStrerror(rc));
 
 	while ((rc = poptGetNextOpt(optcon)) > 0)
 		;
-
-	fwup_set_esp_mountpoint(esp_path);
-
-	set_debug_flag(set_debug);
-
-	if (action & ACTION_SHOW_LOG)
-		dump_log();
 
 	if (action & ACTION_APPLY) {
 		guidstr = poptGetArg(optcon);
@@ -305,7 +176,8 @@ main(int argc, char *argv[]) {
 
 		filename = poptGetArg(optcon);
 		if (!filename) {
-			warningx(_("missing argument: %s"), "<filename.cap>");
+				warningx(_("missing argument: %s"),
+				      "filename.cap");
 			poptPrintUsage(optcon, stderr, 0);
 			exit(1);
 		}
@@ -319,7 +191,7 @@ main(int argc, char *argv[]) {
 		errorx(3, _("invalid argument: \"%s\""),
 			poptPeekArg(optcon));
 
-	if (!action && set_debug == -1) {
+	if (!action) {
 		warningx(_("no action specified"));
 		poptPrintUsage(optcon, stderr, 0);
 		exit(4);
@@ -328,20 +200,20 @@ main(int argc, char *argv[]) {
 
 	if (action & ACTION_SUPPORTED) {
 		rc = fwup_supported();
-		if (rc == FWUP_SUPPORTED_STATUS_UNSUPPORTED) {
+		if (rc == 0) {
 			qprintf("%s\n",
 			  _("Firmware updates are not supported on this machine."));
 			return 1;
-		} else if (rc == FWUP_SUPPORTED_STATUS_UNLOCKED) {
+		} else if (rc == 1) {
 			qprintf("%s\n",
 			  _("Firmware updates are supported on this machine."));
 			return 0;
-		} else if (rc == FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK) {
+		} else if (rc == 2) {
 			qprintf("%s\n%s\n",
 			  _("Firmware updates are supported on this machine."),
 			  _("Support is currently disabled."));
 			return 2;
-		} else if (rc == FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK_NEXT_BOOT) {
+		} else if (rc == 3) {
 			qprintf("%s\n%s\n",
 			  _("Firmware updates are supported on this machine."),
 			  _("Support will be enabled on the next reboot."));
@@ -375,7 +247,7 @@ main(int argc, char *argv[]) {
 		}
 
 		if (!tmpguid && force) {
-			rc = fwup_set_guid_forced(iter, &re, &guid, force);
+			rc = fwup_set_guid(iter, &re, &guid);
 			if (rc < 0)
 				error(2, _("Error configuring GUID"));
 			tmpguid = &guid;
@@ -386,16 +258,11 @@ main(int argc, char *argv[]) {
 			if (fd < 0)
 				error(2, _("could not open \"%s\""), filename);
 
-			fwup_use_existing_media_path(use_existing_media_path);
 			rc = fwup_set_up_update(re, 0, fd);
 			if (rc < 0)
 				error(2, _("Could not set up firmware update"));
 
-			fwup_resource_free(re);
-
-			if (iter)
-				fwup_resource_iter_destroy(&iter);
-
+			fwup_resource_iter_destroy(&iter);
 			exit(0);
 		}
 		errorx(2, _("firmware resource not found"));
@@ -425,9 +292,6 @@ main(int argc, char *argv[]) {
 				_("Firmware updates will be enabled after the system is rebooted."));
 			return 0;
 		}
-	} else if (action & ACTION_VERSION) {
-		qprintf("fwupdate version: %d\n", LIBFWUP_VERSION);
-		return 0;
 	}
 
 	return 0;

@@ -8,16 +8,12 @@
  * Author: Peter Jones <pjones@redhat.com>
  */
 
-#include "fix_coverity.h"
-
 #include <dirent.h>
-#include <efivar/efiboot.h>
-#include <efivar/efivar.h>
+#include <efiboot.h>
+#include <efivar.h>
 #include <err.h>
 #include <errno.h>
 #include <inttypes.h>
-#include <stdarg.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,17 +32,23 @@
 static int verbose;
 #include "error.h"
 
-#include <dell-wmi-smi.h>
 #ifdef FWUPDATE_HAVE_LIBSMBIOS__
-#include <smbios_c/token.h>
+#include </usr/include/smbios_c/token.h>
 #include <smbios_c/smi.h>
+
+#define DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED 0x0461
+#define DELL_CAPSULE_FIRMWARE_UPDATES_DISABLED 0x0462
+#define DELL_CLASS_ADMIN_PROP 10
+#define DELL_SELECT_ADMIN_PROP 3
+#define DELL_ADMIN_MASK 0xF
+#define DELL_ADMIN_INSTALLED 0
 #endif
 
 static char *arch_names_32[] = {
 #if defined(__x86_64__) || defined(__i386__) || defined(__i686__)
 	"ia32",
 #endif
-	EMPTY
+	""
 	};
 
 static int n_arches_32 = sizeof(arch_names_32) / sizeof(arch_names_32[0]);
@@ -57,7 +59,7 @@ static char *arch_names_64[] = {
 #elif defined(__aarch64__)
 	"aa64",
 #endif
-	EMPTY
+	""
 	};
 
 static int n_arches_64 = sizeof(arch_names_64) / sizeof(arch_names_64[0]);
@@ -79,33 +81,6 @@ static int n_arches_64 = sizeof(arch_names_64) / sizeof(arch_names_64[0]);
 		_ret;						\
 	})
 
-static char *esp_mountpoint = FWUP_ESP_MOUNTPOINT;
-
-/**
- * fwup_set_esp_mountpoint:
- * @path: pointer to a string containing the path to the ESP mountpoint
- *
- * The string isn't copied so you should not free it after calling this function
- */
-void
-fwup_set_esp_mountpoint(char *path)
-{
-	esp_mountpoint = path;
-}
-
-/**
- * fwup_get_esp_mountpoint:
- *
- * Returns the path to the ESP mountpoint
- *
- * @returns: pointer to a string
- */
-const char *
-fwup_get_esp_mountpoint(void)
-{
-	return esp_mountpoint;
-}
-
 static int
 efidp_end_entire(efidp_header *dp)
 {
@@ -116,238 +91,6 @@ efidp_end_entire(efidp_header *dp)
 	if (efidp_subtype((efidp)dp) != EFIDP_END_ENTIRE)
 		return 0;
 	return 1;
-}
-
-static int
-wmi_supported(void)
-{
-	if (access(DELL_WMI_CHAR, F_OK) != -1)
-		return 1;
-	return 0;
-}
-
-static int
-wmi_call_ioctl(struct dell_wmi_smbios_buffer *buffer)
-{
-	int fd, ret;
-	int error;
-
-	fd = open(DELL_WMI_CHAR, O_NONBLOCK);
-	if (fd < 0)
-		return fd;
-
-	ret = ioctl(fd, DELL_WMI_SMBIOS_CMD, buffer);
-	error = errno;
-	close(fd);
-	errno = error;
-	return ret;
-}
-
-static int
-wmi_read_buffer_size(uint64_t *buffer_size)
-{
-	FILE *f;
-	size_t read;
-	int error;
-
-	f = fopen(DELL_WMI_CHAR, "rb");
-	if (!f)
-		return -1;
-	read = fread(buffer_size, sizeof(uint64_t), 1, f);
-	error = errno;
-	fclose(f);
-	errno = error;
-	if (read != 1)
-		return -1;
-	return 0;
-}
-
-static int
-wmi_find_token(uint16_t token, uint32_t *location, uint32_t *value)
-{
-	char value_sysfs[sizeof("ffff_value")];
-	char location_sysfs[sizeof("ffff_location")];
-
-	sprintf(value_sysfs, "%04hhx_value", token);
-	sprintf(location_sysfs, "%04hhx_location", token);
-
-	*value = get_value_from_file_at_dir(TOKENS_SYSFS, value_sysfs);
-	*location = get_value_from_file_at_dir(TOKENS_SYSFS, location_sysfs);
-
-	if (*location)
-		return 0;
-
-	return -1;
-}
-
-static int
-prepare_buffer_real(struct dell_wmi_smbios_buffer **buffer,
-		    uint16_t class, uint16_t select, unsigned int count, ...)
-{
-	uint64_t buffer_size = 0;
-	int ret;
-	va_list ap;
-	/* the biggest known value provided by any system today */
-	uint64_t limit = 32768;
-
-	if (count > 4 || !buffer) {
-		errno = EINVAL;
-		return -errno;
-	}
-
-	ret = wmi_read_buffer_size(&buffer_size);
-	if (ret < 0 || buffer_size < 1) {
-		errno = ENODEV;
-		return -errno;
-	}
-
-	if (buffer_size > limit) {
-		errno = EINVAL;
-		return -errno;
-	}
-
-	*buffer = malloc(buffer_size);
-	if (!*buffer) {
-		errno = ENOMEM;
-		return -errno;
-	}
-
-	(*buffer)->length = buffer_size;
-	(*buffer)->std.cmd_class = class;
-	(*buffer)->std.cmd_select = select;
-	va_start(ap, count);
-	for (unsigned int i = 0; i < count; i++) {
-		uint32_t arg = va_arg(ap, uint32_t);
-		(*buffer)->std.input[i] = arg;
-	}
-	va_end(ap);
-	return 0;
-}
-
-#define prepare_buffer(buffer, class, select, count, ...)		\
-	({								\
-		int ret_;						\
-		ret_ = prepare_buffer_real(buffer, class, select,	\
-					   count, ##__VA_ARGS__);	\
-		if (ret_ >= 0)						\
-			*(buffer) = onstack(*(buffer),			\
-					    (*(buffer))->length);	\
-		ret_;							\
-	 })
-
-static int
-wmi_token_is_active(uint32_t *location, uint32_t *cmpvalue)
-{
-	struct dell_wmi_smbios_buffer *ioctl_buffer;
-	int ret;
-
-	ret = prepare_buffer(&ioctl_buffer, CLASS_TOKEN_READ,
-			     SELECT_TOKEN_STD, 1, *location);
-	if (ret < 0)
-		return ret;
-
-	ret = wmi_call_ioctl(ioctl_buffer);
-	if (ret < 0 || ioctl_buffer->std.output[0] != 0)
-		return ret;
-
-	return (ioctl_buffer->std.output[1] == *cmpvalue);
-}
-
-static int
-query_token(uint16_t token)
-{
-	if (wmi_supported()) {
-		uint32_t location = 0;
-		uint32_t cmpvalue = 0;
-
-		/* locate token */
-		if (wmi_find_token(token, &location, &cmpvalue) < 0)
-			return -1;
-
-		/* query actual token status */
-		return wmi_token_is_active(&location, &cmpvalue);
-	}
-#ifdef FWUPDATE_HAVE_LIBSMBIOS__
-	if (!token_is_bool(token))
-		return -1;
-
-	if (token_is_active(token) > 0)
-		return 1;
-#endif
-	return -1;
-}
-
-static int
-activate_token(uint16_t token)
-{
-	int ret;
-	if (wmi_supported()) {
-		struct dell_wmi_smbios_buffer *ioctl_buffer;
-		uint32_t location;
-		uint32_t cmpvalue;
-
-		/* locate token */
-		if (wmi_find_token(token, &location, &cmpvalue) < 0)
-			return -1;
-
-		ret = prepare_buffer(&ioctl_buffer, CLASS_TOKEN_WRITE,
-				     SELECT_TOKEN_STD, 2, location, 1);
-		if (ret < 0)
-			return ret;
-
-		ret = wmi_call_ioctl(ioctl_buffer);
-		return ret;
-	}
-#ifdef FWUPDATE_HAVE_LIBSMBIOS__
-	token_activate(token);
-	ret = token_is_active(token);
-	if (ret < 0) {
-		efi_error("%d activation failed", token);
-		return FWUPDATE_ADMIN_PASSWORD_SET;
-	}
-	return FWUPDATE_ESRT_DISABLED;
-#else
-	return FWUPDATE_NO_TOKENS_FOUND;
-#endif
-}
-
-static int
-admin_password_present()
-{
-	int ret;
-
-	if (wmi_supported()) {
-		struct dell_wmi_smbios_buffer *ioctl_buffer;
-		ret = prepare_buffer(&ioctl_buffer, CLASS_ADMIN_PROP,
-				     SELECT_ADMIN_PROP, 0);
-		if (ret < 0)
-			return ret;
-
-		ret = wmi_call_ioctl(ioctl_buffer);
-		if (ret < 0)
-			return ret;
-
-		if (ioctl_buffer->std.output[0] != 0 ||
-		   (ioctl_buffer->std.output[1] & DELL_ADMIN_MASK) == DELL_ADMIN_INSTALLED)
-			return FWUPDATE_ADMIN_PASSWORD_SET;
-
-		return FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK;
-	}
-#ifdef FWUPDATE_HAVE_LIBSMBIOS__
-	uint32_t args[4] = { 0, }, out[4] = { 0, };
-
-	if (dell_simple_ci_smi(CLASS_ADMIN_PROP,
-			       SELECT_ADMIN_PROP, args, out))
-		return FWUPDATE_LIBSMBIOS_FAILURE;
-
-	if (out[0] != 0 || (out[1] & DELL_ADMIN_MASK) == DELL_ADMIN_INSTALLED)
-		return FWUPDATE_ADMIN_PASSWORD_SET;
-
-	return FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK;
-#else
-	return FWUPDATE_NO_TOKENS_FOUND;
-#endif
-
 }
 
 /*
@@ -364,16 +107,26 @@ admin_password_present()
 int
 fwup_esrt_disabled(void)
 {
-	int ret;
-
-	ret = query_token(CAPSULE_DIS_TOKEN);
-	if (ret < 0) {
-		ret = query_token(CAPSULE_EN_TOKEN);
-		if (ret > 0)
-			return FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK_NEXT_BOOT;
-		return FWUPDATE_LIBSMBIOS_FAILURE;
+#ifdef FWUPDATE_HAVE_LIBSMBIOS__
+	uint32_t args[4] = {0,}, out[4] = {0,};
+	if (!token_is_bool(DELL_CAPSULE_FIRMWARE_UPDATES_DISABLED))
+		return -1;
+	if (!token_is_active(DELL_CAPSULE_FIRMWARE_UPDATES_DISABLED))
+	{
+		if (token_is_active(DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED))
+			return 3;
+		return -2;
 	}
-	return admin_password_present();
+	if (dell_simple_ci_smi(DELL_CLASS_ADMIN_PROP,
+			       DELL_SELECT_ADMIN_PROP,
+			       args, out))
+		return -2;
+	if (out[0] != 0 || (out[1] & DELL_ADMIN_MASK) == DELL_ADMIN_INSTALLED)
+		return -3;
+	return 2;
+#else
+	return -1;
+#endif
 }
 
 /*
@@ -389,24 +142,37 @@ fwup_esrt_disabled(void)
 int
 fwup_enable_esrt(void)
 {
+#ifdef FWUPDATE_HAVE_LIBSMBIOS__
 	int rc;
 	rc = fwup_supported();
-
 	/* can't enable or already enabled */
-	if (rc != FWUP_SUPPORTED_STATUS_LOCKED_CAN_UNLOCK) {
+	if (rc != 2) {
 		efi_error("fwup_supported() returned %d", rc);
 		return rc;
 	}
 	/* disabled in BIOS, but supported to be enabled via tool */
-	rc = query_token(CAPSULE_EN_TOKEN);
+	rc = token_is_bool(DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED);
 	if (!rc) {
-		efi_error
-		    ("DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED is unsupported");
-		return FWUPDATE_LIBSMBIOS_FAILURE;
+		efi_error(
+			"DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED is unsupported");
+		return -1;
 	}
-	activate_token(CAPSULE_EN_TOKEN);
-
-	return FWUPDATE_ESRT_DISABLED;
+	rc = token_is_active(DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED);
+	if (rc) {
+		efi_error("DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED is enabled");
+		return -2;
+	}
+	token_activate(DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED);
+	rc = token_is_active(DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED);
+	if (!rc) {
+		efi_error("DELL_CAPSULE_FIRMWARE_UPDATES_ENABLED activation failed");
+		return -3;
+	}
+	return 2;
+#else
+	errno = ENOSYS;
+	return -1;
+#endif
 }
 
 /*
@@ -425,22 +191,24 @@ fwup_supported(void)
 {
 	struct stat buf;
 	int rc;
+
 	rc = stat(get_esrt_dir(1), &buf);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		efi_error("ESRT is not present");
 		/* check if we have the ability to turn on ESRT */
 		rc = fwup_esrt_disabled();
 		if (rc < 0) {
 			efi_error("ESRT cannot be enabled");
-			return FWUP_SUPPORTED_STATUS_UNSUPPORTED;
+			return 0;
 		}
 		return rc;
 	}
 	if (buf.st_nlink < 3) {
 		efi_error("ESRT has no entries.");
-		return FWUP_SUPPORTED_STATUS_UNSUPPORTED;
+		return 0;
 	}
-	return FWUP_SUPPORTED_STATUS_UNLOCKED;
+	return 1;
 }
 
 typedef struct esre_s {
@@ -462,6 +230,8 @@ free_info(update_info *info)
 		free(info);
 	}
 }
+
+#define FWUPDATE_GUID EFI_GUID(0x0abba7dc,0xe516,0x4167,0xbbf5,0x4d,0x9d,0x1c,0x73,0x94,0x16)
 
 static int
 get_info(efi_guid_t *guid, uint64_t hw_inst, update_info **info)
@@ -497,8 +267,6 @@ get_info(efi_guid_t *guid, uint64_t hw_inst, update_info **info)
 			efi_error("efi_get_variable() failed");
 			return -1;
 		}
-		efi_error_clear();
-
 		local = calloc(1, sizeof (*local));
 		if (!local) {
 			efi_error("calloc(1, %zd) failed", sizeof (*local));
@@ -522,6 +290,7 @@ alloc_err:
 		ssize_t sz;
 		sz = efidp_make_end_entire((uint8_t *)local->dp_ptr, 1024);
 		if (sz < 0) {
+			rc = sz;
 			efi_error("efidp_make_end_entire() failed");
 			goto alloc_err;
 		}
@@ -541,9 +310,10 @@ get_err:
 			return -1;
 		}
 		rc = get_info(guid, hw_inst, info);
-		if (rc < 0)
+		if (rc < 0) {
 			efi_error("get_info() failed");
-		return rc;
+			return rc;
+		}
 	}
 	local = (update_info *)data;
 
@@ -552,7 +322,7 @@ get_err:
 		goto get_err;
 	}
 
-	ssize_t sz = efidp_size((efidp)local->dp_buf);
+	ssize_t sz = efidp_size((efidp)local->dp);
 	if (sz < 0) {
 		efi_error("efidp_size() failed");
 		free(data);
@@ -568,7 +338,7 @@ get_err:
 		return -1;
 	}
 
-	memcpy(dp, local->dp_buf, (size_t)sz);
+	memcpy(dp, local->dp, (size_t)sz);
 	local->dp_ptr = dp;
 
 	*info = local;
@@ -608,10 +378,7 @@ err:
 		return -1;
 	}
 	/* Make sure sizeof(*info) + dps won't integer overflow */
-	if (((size_t)dps >= SSIZE_MAX - sizeof(*info)) ||
-	    /* Make sure extra hard by just picking an astonishingly large
-	     * value that's merely very very unlikely... */
-	    ((ssize_t)dps > sysconf(_SC_PAGESIZE) * 100)) {
+	if ((size_t)dps > SSIZE_MAX - sizeof(*info)) {
 		efi_error("device path size (%zd) would overflow", dps);
 		errno = EOVERFLOW;
 		return -1;
@@ -625,13 +392,13 @@ err:
 		return -1;
 
 	memcpy(info2, info, sizeof(*info));
-	memcpy(info2->dp_buf, info->dp_ptr, dps);
+	memcpy(info2->dp, info->dp_ptr, dps);
 
 	uint32_t attributes = EFI_VARIABLE_NON_VOLATILE
 			      | EFI_VARIABLE_BOOTSERVICE_ACCESS
 			      | EFI_VARIABLE_RUNTIME_ACCESS;
 	rc = efi_set_variable(varguid, varname, (uint8_t *)info2,
-			      is, attributes, 0644);
+			      is, attributes, 0600);
 	error = errno;
 	if (rc < 0)
 		efi_error("efi_set_variable(%s) failed", varname);
@@ -640,20 +407,15 @@ err:
 	return rc;
 }
 
-static int32_t fwup_screen_xsize;
-static int32_t fwup_screen_ysize;
-
 typedef struct fwup_resource_s
 {
 	esre esre;
-	bool allocated; /* was this allocated *without* a fwup_resource_iter? */
 	update_info *info;
 } fwup_resource;
 
 typedef struct fwup_resource_iter_s {
 	DIR *dir;
 	int dirfd;
-	int add_ux_capsule;
 	fwup_resource re;
 } fwup_resource_iter;
 
@@ -661,10 +423,7 @@ int
 fwup_resource_iter_create(fwup_resource_iter **iter)
 {
 	int error;
-	char *path;
-	uint32_t x, y;
-	char *env;
-
+	const char *path;
 	if (!iter) {
 		efi_error("invalid iter");
 		errno = EINVAL;
@@ -680,13 +439,16 @@ fwup_resource_iter_create(fwup_resource_iter **iter)
 	path = get_esrt_dir(1);
 	if (!path) {
 		efi_error("get_esrt_dir(1) failed");
-		goto err;
+		return -1;
 	}
-
 	new->dir = opendir(path);
 	if (!new->dir) {
 		efi_error("opendir(path) failed");
-		goto err;
+err:
+		error = errno;
+		free(new);
+		errno = error;
+		return -1;
 	}
 
 	new->dirfd = dirfd(new->dir);
@@ -695,50 +457,19 @@ fwup_resource_iter_create(fwup_resource_iter **iter)
 		goto err;
 	}
 
-	new->add_ux_capsule = true;
-	env = getenv("LIBFWUP_ADD_UX_CAPSULE");
-	if (env && !strcmp(env, "0") && fwup_get_ux_capsule_info(&x, &y) >= 0)
-		new->add_ux_capsule = false;
-
 	*iter = new;
 	return 0;
-err:
-	error = errno;
-	if (new) {
-		if (new->dir)
-			closedir(new->dir);
-		free(new);
-	}
-	errno = error;
-	return -1;
 }
 
 static void
 clear_res(fwup_resource *res)
 {
-	if (res) {
-		bool allocated = res->allocated;
-		if (res->info) {
-			if (res->info->dp_ptr)
-				free(res->info->dp_ptr);
-			free(res->info);
-		}
-		memset(res, 0, sizeof (*res));
-		res->allocated = allocated;
+	if (res->info) {
+		if (res->info->dp_ptr)
+			free(res->info->dp_ptr);
+		free(res->info);
 	}
-}
-
-void
-fwup_resource_free(fwup_resource *res)
-{
-	if (!res)
-		return;
-
-	if (res->allocated != true)
-		return;
-
-	memset(res, '\0', sizeof(*res));
-	free(res);
+	memset(res, 0, sizeof (*res));
 }
 
 int
@@ -762,32 +493,6 @@ fwup_resource_iter_destroy(fwup_resource_iter **iterp)
 	return 0;
 }
 
-static fwup_resource fwup_ux_capsule = {
-	.esre.fw_type = FWUP_RESOURCE_TYPE_SYSTEM_FIRMWARE,
-	.esre.fw_version = 1,
-	.esre.lowest_supported_fw_version = 1,
-	.esre.capsule_flags = CAPSULE_FLAGS_PERSIST_ACROSS_RESET,
-	.esre.last_attempt_version = 1,
-	.esre.last_attempt_status = FWUP_LAST_ATTEMPT_STATUS_ERROR_UNSUCCESSFUL,
-	.info = NULL
-};
-
-static fwup_resource *
-make_ux_capsule_entry(void)
-{
-	int rc;
-	fwup_ux_capsule.esre.guid = efi_guid_ux_capsule;
-
-	if (fwup_ux_capsule.info == NULL) {
-		rc = get_info(&fwup_ux_capsule.esre.guid, 0, &fwup_ux_capsule.info);
-		if (rc < 0) {
-			efi_error("get_info() failed");
-			return NULL;
-		}
-	}
-	return &fwup_ux_capsule;
-}
-
 int
 fwup_resource_iter_next(fwup_resource_iter *iter, fwup_resource **re)
 {
@@ -808,16 +513,6 @@ fwup_resource_iter_next(fwup_resource_iter *iter, fwup_resource **re)
 				efi_error("readdir failed");
 				return -1;
 			}
-			if (iter->add_ux_capsule) {
-				iter->add_ux_capsule = false;
-				*re = make_ux_capsule_entry();
-				if (*re)
-					return 1;
-			} else if (fwup_ux_capsule.info) {
-				free_info(fwup_ux_capsule.info);
-				fwup_ux_capsule.info = NULL;
-			}
-
 			return 0;
 		}
 		if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
@@ -861,49 +556,19 @@ fwup_resource_iter_next(fwup_resource_iter *iter, fwup_resource **re)
 }
 
 int
-fwup_set_guid_forced(fwup_resource_iter *iter, fwup_resource **re,
-		     const efi_guid_t *guid, bool force)
-{
-	fwup_resource *res;
-
-	errno = 0;
-	if (!re) {
-		efi_error("invalid argument 're'");
-		errno = EINVAL;
-		return -1;
-	}
-	if (!iter && (!*re && !force)) {
-		efi_error("invalid argument '%s'", iter ? "iter" : "re");
-		errno = EINVAL;
-		return -1;
-	}
-	if (iter) {
-		res = &iter->re;
-		res->esre.guid = *guid;
-		*re = res;
-	} else if (force) {
-		res = calloc(1, sizeof (*res));
-		if (!res) {
-			efi_error("couldn't allocate resource");
-			errno = ENOMEM;
-			return -1;
-		}
-		res->esre.guid = *guid;
-		res->allocated = true;
-		*re = res;
-	} else {
-		efi_error("No such guid");
-		errno = ENOENT;
-		return -1;
-	}
-	return 1;
-}
-
-int
 fwup_set_guid(fwup_resource_iter *iter, fwup_resource **re,
 	      const efi_guid_t *guid)
 {
-	return fwup_set_guid_forced(iter, re, guid, false);
+	fwup_resource *res;
+	if (!iter || !re) {
+		efi_error("invalid %s", iter ? "resource" : "iter");
+		errno = EINVAL;
+		return -1;
+	}
+	res = &iter->re;
+	res->esre.guid = *guid;
+	*re = res;
+	return 1;
 }
 
 int
@@ -1035,10 +700,9 @@ static int
 get_paths(char **shim_fs_path, char **fwup_fs_path, char **fwup_esp_path)
 {
 	int ret = -1;
-	int rc;
 
-	char *shim_fs_path_tmpl = NULL;
-	char *fwup_fs_path_tmpl = NULL;
+	char shim_fs_path_tmpl[] = "/boot/efi/EFI/"FWUP_EFI_DIR_NAME"/shim";
+	char fwup_fs_path_tmpl[] = "/boot/efi/EFI/"FWUP_EFI_DIR_NAME"/fwup";
 	uint8_t fwup_esp_path_tmpl[] = "\\fwup";
 
 	char *shim_fs_path_tmp = NULL;
@@ -1047,20 +711,6 @@ get_paths(char **shim_fs_path, char **fwup_fs_path, char **fwup_esp_path)
 
 	uint64_t firmware_bits = 0;
 
-	rc = asprintf(&shim_fs_path_tmpl, "%s/EFI/%s/shim",
-		      esp_mountpoint, FWUP_EFI_DIR_NAME);
-	if (rc < 0) {
-		efi_error("asprintf failed");
-		goto out;
-	}
-
-	rc = asprintf(&fwup_fs_path_tmpl, "%s/EFI/%s/fwup",
-		      esp_mountpoint, FWUP_EFI_DIR_NAME);
-	if (rc < 0) {
-		efi_error("asprintf failed");
-		goto out;
-	}
-
 	firmware_bits = get_value_from_file_at_dir("/sys/firmware/efi/",
 						   "fw_platform_size");
 	char **arch_names = firmware_bits == 64 ? arch_names_64
@@ -1068,17 +718,19 @@ get_paths(char **shim_fs_path, char **fwup_fs_path, char **fwup_esp_path)
 	int n_arches = firmware_bits == 64 ? n_arches_64 : n_arches_32;
 	int i;
 
+	int rc;
+
 	*shim_fs_path = NULL;
 	*fwup_fs_path = NULL;
 	*fwup_esp_path = NULL;
 
-	find_matching_file(shim_fs_path_tmpl, ".efi", arch_names,
-			   n_arches, &shim_fs_path_tmp);
+	i = find_matching_file(shim_fs_path_tmpl, ".efi", arch_names,
+			       n_arches, &shim_fs_path_tmp);
 
 	i = find_matching_file(fwup_fs_path_tmpl, ".efi", arch_names,
-			       n_arches, &fwup_fs_path_tmp);
+				       n_arches, &fwup_fs_path_tmp);
 	if (i < 0) {
-		efi_error("could not find fwup on ESP");
+		efi_error("could not find shim or fwup on ESP");
 		errno = ENOENT;
 		ret = i;
 		goto out;
@@ -1107,15 +759,8 @@ get_paths(char **shim_fs_path, char **fwup_fs_path, char **fwup_esp_path)
 	if (fwup_esp_path_tmp)
 		*fwup_esp_path = fwup_esp_path_tmp;
 
-	free(shim_fs_path_tmpl);
-	free(fwup_fs_path_tmpl);
-
 	return 0;
 out:
-	if (shim_fs_path_tmpl)
-		free(shim_fs_path_tmpl);
-	if (fwup_fs_path_tmpl)
-		free(fwup_fs_path_tmpl);
 	if (*shim_fs_path)
 		free(*shim_fs_path);
 	if (*fwup_fs_path)
@@ -1130,17 +775,15 @@ add_to_boot_order(uint16_t boot_entry)
 {
 	uint16_t *boot_order = NULL, *new_boot_order = NULL;
 	size_t boot_order_size = 0;
-	uint32_t attr = EFI_VARIABLE_NON_VOLATILE |
-			EFI_VARIABLE_BOOTSERVICE_ACCESS |
-			EFI_VARIABLE_RUNTIME_ACCESS;
+	uint32_t attr;
 	int rc;
-	unsigned int i = 0;
+	unsigned int i;
 
 	rc = efi_get_variable_size(efi_guid_global, "BootOrder",
 				   &boot_order_size);
 	if (rc == ENOENT) {
 		boot_order_size = 0;
-		efi_error_clear();
+		rc = 0;
 	} else if (rc < 0) {
 		efi_error("efi_get_variable_size() failed");
 		return rc;
@@ -1170,16 +813,14 @@ add_to_boot_order(uint16_t boot_entry)
 			  boot_order_size + sizeof (uint16_t));
 		return -1;
 	}
-	if (boot_order_size != 0)
-		memcpy(new_boot_order, boot_order, boot_order_size);
+	memcpy(new_boot_order, boot_order, boot_order_size);
 
-	i = boot_order_size / sizeof (uint16_t);
 	new_boot_order[i] = boot_entry;
 	boot_order_size += sizeof (uint16_t);
 
 	rc = efi_set_variable(efi_guid_global, "BootOrder",
 			      (uint8_t *)new_boot_order, boot_order_size,
-			      attr, 0644);
+			      attr, 0600);
 	if (rc < 0)
 		efi_error("efi_set_variable() failed");
 
@@ -1369,7 +1010,7 @@ do_next:
 	if (found) {
 		efi_loadopt_attr_set(loadopt, LOAD_OPTION_ACTIVE);
 		rc = efi_set_variable(*guid, name, var_data,
-				      var_data_size, attr, 0644);
+				      var_data_size, attr, 0600);
 		free(var_data);
 		if (rc < 0) {
 			efi_error("could not set boot variable active");
@@ -1393,13 +1034,13 @@ do_next:
 			goto out;
 		}
 
-		sprintf(boot_next_name, "Boot%04hX", boot_next & 0xffff);
+		sprintf(boot_next_name, "Boot%04X", boot_next);
 		rc = efi_set_variable(efi_guid_global, boot_next_name, opt,
 				      opt_size,
 				      EFI_VARIABLE_NON_VOLATILE |
 				      EFI_VARIABLE_BOOTSERVICE_ACCESS |
 				      EFI_VARIABLE_RUNTIME_ACCESS,
-				      0644);
+				      0600);
 		if (rc < 0) {
 			efi_error("could not set boot variable");
 			goto out;
@@ -1419,7 +1060,7 @@ do_next:
 			      EFI_VARIABLE_NON_VOLATILE |
 			      EFI_VARIABLE_BOOTSERVICE_ACCESS |
 			      EFI_VARIABLE_RUNTIME_ACCESS,
-			      0644);
+			      0600);
 	if (rc < 0)
 		efi_error("could not set BootNext");
 	else
@@ -1500,29 +1141,13 @@ get_existing_media_path(update_info *info)
 	untilt_slashes(relpath);
 
 	/* build a complete path */
-	rc = asprintf(&fullpath, "%s%s", esp_mountpoint, relpath);
+	rc = asprintf(&fullpath, "/boot/efi%s", relpath);
 	if (rc < 0)
 		fullpath = NULL;
 
 out:
 	free(relpath);
 	return fullpath;
-}
-
-static bool use_existing_media_path = true;
-
-/**
- * fwup_use_existing_media_path:
- * @use_existing_media_path_: 0 or 1
- *
- * set use_existing_media_path, used in get_fd_and_media_path
- * to know if we have to reuse the filename register for this
- * update GUID in the firmware.
- */
-void
-fwup_use_existing_media_path(int use_existing_media_path_)
-{
-	use_existing_media_path = use_existing_media_path_;
 }
 
 /**
@@ -1537,59 +1162,34 @@ fwup_use_existing_media_path(int use_existing_media_path_)
 static int
 get_fd_and_media_path(update_info *info, char **path)
 {
-	char *directory = NULL;
 	char *fullpath = NULL;
 	int fd = -1;
 	int rc;
-	bool make_new_path = false;
 
 	/* look for an existing variable that we've used before for this
 	 * update GUID, and reuse the filename so we don't wind up
 	 * littering the filesystem with old updates */
-	if (use_existing_media_path)
-		fullpath = get_existing_media_path (info);
-
+	fullpath = get_existing_media_path (info);
 	if (fullpath) {
 		fd = open(fullpath, O_CREAT|O_TRUNC|O_CLOEXEC|O_RDWR, 0600);
 		if (fd < 0) {
 			efi_error("open of %s failed", fullpath);
-			if (errno == ENOENT)
-				make_new_path = true;
-			else
-				goto out;
+			goto out;
 		}
 	} else {
-		make_new_path = true;
-	}
-
-	if (make_new_path) {
 		/* fall back to creating a new file from scratch */
-		rc = asprintf(&directory,
-			      "%s/EFI/%s/fw",
-			      esp_mountpoint,
+		rc = asprintf(&fullpath,
+			      "/boot/efi/EFI/%s/fw/fwupdate-XXXXXX.cap",
 			      FWUP_EFI_DIR_NAME);
 		if (rc < 0) {
-			efi_error("asprintf directory failed");
+			efi_error("asprintf failed");
 			return fd;
-		}
-		rc = mkdir(directory, 0775);
-		if (rc < 0 && errno != EEXIST) {
-			efi_error("failed to make %s", directory);
-			goto out;
-		}
-		rc = asprintf(&fullpath,
-			      "%s/fwupdate-XXXXXX.cap",
-			      directory);
-		if (rc < 0) {
-			efi_error("asprintf fullpath failed");
-			goto out;
 		}
 		fd = mkostemps(fullpath, 4, O_CREAT|O_TRUNC|O_CLOEXEC);
 		if (fd < 0) {
 			efi_error("mkostemps(%s) failed", fullpath);
 			goto out;
 		}
-		efi_error_clear();
 	}
 
 	/* success, so take ownership of the string */
@@ -1598,7 +1198,6 @@ get_fd_and_media_path(update_info *info, char **path)
 		fullpath = NULL;
 	}
 out:
-	free(directory);
 	free(fullpath);
 	return fd;
 }
@@ -1660,159 +1259,6 @@ out:
 	return rc;
 }
 
-static int
-get_bmp_size(uint8_t *buf, size_t buf_size, int *height, int *width)
-{
-	uint32_t ui32;
-
-	if (buf_size < 26) {
-invalid:
-		errno = EINVAL;
-		return -1;
-	}
-
-	if (memcmp(buf, "BM", 2) != 0)
-		goto invalid;
-
-	memcpy(&ui32, buf+10, 4);
-	if (ui32 < 26)
-		goto invalid;
-
-	memcpy(&ui32, buf+14, 4);
-	if (ui32 < 26 - 14)
-		goto invalid;
-
-	memcpy(width, buf+18, 4);
-	memcpy(height, buf+22, 4);
-
-	return 0;
-}
-
-#define fbdir "/sys/bus/platform/drivers/efi-framebuffer/efi-framebuffer.0"
-static int
-read_efifb_info(int *height, int *width)
-{
-	*height = get_value_from_file_at_dir(fbdir, "height");
-	*width = get_value_from_file_at_dir(fbdir, "width");
-
-	return 0;
-}
-
-typedef struct {
-	efi_guid_t guid;
-	uint32_t header_size;
-	uint32_t flags;
-	uint32_t capsule_image_size;
-} efi_capsule_header_t;
-
-static int
-write_ux_capsule_header(FILE *fin, FILE *fout)
-{
-	int rc = -1;
-	int bgrt_x, bgrt_y;
-	int bgrt_height, bgrt_width;
-	int screen_x, screen_y;
-	int height, width;
-	uint8_t *buf = NULL;
-	size_t buf_size = 0;
-	ux_capsule_header_t header;
-	size_t size;
-	int error;
-	long header_pos;
-	efi_capsule_header_t capsule_header = {
-		.flags = CAPSULE_FLAGS_PERSIST_ACROSS_RESET,
-		.guid = efi_guid_ux_capsule,
-		.header_size = sizeof(efi_capsule_header_t),
-		.capsule_image_size = 0
-	};
-
-	bgrt_x = get_value_from_file_at_dir("/sys/firmware/acpi/bgrt",
-					    "xoffset");
-	if (bgrt_x < 0) {
-		rc = bgrt_x;
-		goto out;
-	}
-
-	bgrt_y = get_value_from_file_at_dir("/sys/firmware/acpi/bgrt",
-					    "yoffset");
-	if (bgrt_y < 0) {
-		rc = bgrt_y;
-		goto out;
-	}
-
-	rc = read_file_at_dir("/sys/firmware/acpi/bgrt", "image",
-			      &buf, &buf_size);
-	if (rc < 0)
-		return rc;
-
-	rc = get_bmp_size(buf, buf_size, &bgrt_height, &bgrt_width);
-	if (rc < 0)
-		goto out;
-
-	rc = read_efifb_info(&screen_x, &screen_y);
-	if (rc < 0)
-		goto out;
-
-	header_pos = ftell(fin);
-	if (header_pos < 0)
-		goto out;
-	buf_size = fread(buf, 1, 26, fin);
-	if (buf_size < 26)
-		goto out;
-
-	rc = get_bmp_size(buf, buf_size, &height, &width);
-	if (rc < 0)
-		goto out;
-
-	rc = fseek(fin, 0, SEEK_END);
-	if (rc < 0)
-		goto out;
-
-	capsule_header.capsule_image_size =
-		ftell(fin) +
-		sizeof(efi_capsule_header_t) +
-		sizeof(header);
-
-	rc = fseek(fin, header_pos, SEEK_SET);
-	if (rc < 0)
-		goto out;
-
-	memset(&header, '\0', sizeof(header));
-	header.version = 1;
-	header.image_type = 0;
-	header.reserved = 0;
-	header.x_offset = (screen_x / 2) - (width / 2);
-	header.y_offset = bgrt_y + bgrt_height;
-
-	size = fwrite(&capsule_header, capsule_header.header_size, 1, fout);
-	if (size != 1) {
-		rc = -1;
-		goto out;
-	}
-
-	size = fwrite(&header, sizeof(header), 1, fout);
-	if (size != 1) {
-		rc = -1;
-		goto out;
-	}
-	fflush(fout);
-
-	size = fcopy_file(fin, fout);
-	if (size == 0) {
-		rc = -1;
-		goto out;
-	}
-	fflush(fout);
-
-	rc = 0;
-out:
-	error = errno;
-	if (buf)
-		free(buf);
-	errno = error;
-	return rc;
-}
-
 /**
  * fwup_set_up_update
  * @re: A %fwup_resource.
@@ -1839,12 +1285,6 @@ fwup_set_up_update(fwup_resource *re,
 	int error;
 
 	/* check parameters */
-	if (!re) {
-		efi_error("invalid resource");
-		errno = EINVAL;
-		return -1;
-	}
-
 	if (infd < 0) {
 		efi_error("invalid file descriptor");
 		errno = EINVAL;
@@ -1852,10 +1292,6 @@ fwup_set_up_update(fwup_resource *re,
 	}
 
 	offset = lseek(infd, 0, SEEK_CUR);
-	if (offset < 0) {
-		efi_error("lseek failed");
-		return -1;
-	}
 
 	/* get device */
 	rc = get_info(&re->esre.guid, 0, &info);
@@ -1865,9 +1301,9 @@ fwup_set_up_update(fwup_resource *re,
 	}
 
 	/* get destination */
-	rc = -1;
 	outfd = get_fd_and_media_path(info, &path);
 	if (outfd < 0) {
+		rc = -1;
 		goto out;
 	}
 
@@ -1879,15 +1315,43 @@ fwup_set_up_update(fwup_resource *re,
 	if (!fout)
 		goto out;
 
-	if (!efi_guid_cmp(&re->esre.guid, &efi_guid_ux_capsule)) {
-		rc = write_ux_capsule_header(fin, fout);
-		if (rc < 0)
-			goto out;
-	}
+	/* copy the input file to the new home */
+	while (1) {
+		int c;
+		int rc;
 
-	rc = fcopy_file(fin, fout);
-	if (rc < 0)
-		goto out;
+		c = fgetc(fin);
+		if (c == EOF) {
+			if (feof(fin)) {
+				break;
+			} else if (ferror(fin)) {
+				efi_error("read failed");
+				rc = -1;
+				goto out;
+			} else {
+				efi_error("fgetc() == EOF but no error is set.");
+				errno = EINVAL;
+				rc = -1;
+				goto out;
+			}
+		}
+
+		rc = fputc(c, fout);
+		if (rc == EOF) {
+			if (feof(fout)) {
+				break;
+			} else if (ferror(fout)) {
+				efi_error("write failed");
+				rc = -1;
+				goto out;
+			} else {
+				efi_error("fputc() == EOF but no error is set.");
+				errno = EINVAL;
+				rc = -1;
+				goto out;
+			}
+		}
+	}
 
 	/* set efidp header */
 	rc = set_efidp_header(info, path);
@@ -1908,17 +1372,15 @@ fwup_set_up_update(fwup_resource *re,
 	rc = set_up_boot_next();
 	if (rc < 0)
 		goto out;
-
 out:
 	error = errno;
+	lseek(infd, offset, SEEK_SET);
 	if (path)
 		free(path);
 	if (fin)
 		fclose(fin);
-	if (fout) {
-		fflush(fout);
+	if (fout)
 		fclose(fout);
-	}
 	free_info(info);
 	if (outfd >= 0) {
 		fsync(outfd);
@@ -1948,56 +1410,46 @@ fwup_set_up_update_with_buf(fwup_resource *re,
 {
 	char *path = NULL;
 	int fd = -1;
-	int rc = -1;
+	int rc;
 	update_info *info = NULL;
 	int error;
-	FILE *fin = NULL, *fout = NULL;
+	off_t off = 0;
 
 	/* check parameters */
-	if (!re) {
-		efi_error("invalid resource");
-		errno = EINVAL;
-		return -1;
-	}
-
 	if (buf == NULL || sz == 0) {
-		efi_error("invalid %s", buf == NULL ? "buffer" : "size");
-		errno = EINVAL;
+		efi_error("buf invalid.");
+		rc = -1;
 		goto out;
 	}
 
 	/* get device */
 	rc = get_info(&re->esre.guid, 0, &info);
 	if (rc < 0) {
-		efi_error("get_info() failed.");
+		efi_error("get_info failed.");
 		goto out;
 	}
 
 	/* get destination */
 	fd = get_fd_and_media_path(info, &path);
 	if (fd < 0) {
-		efi_error("get_fd_and_media_path() failed");
+		rc = -1;
 		goto out;
 	}
 
-	rc = -1;
-	fin = fmemopen((void *)buf, sz, "r");
-	if (!fin)
-		goto out;
-
-	fout = fdopen(fd, "w");
-	if (!fout)
-		goto out;
-
-	if (!efi_guid_cmp(&re->esre.guid, &efi_guid_ux_capsule)) {
-		rc = write_ux_capsule_header(fin, fout);
-		if (rc < 0)
+	/* write the buf to a new file */
+	while (sz-off) {
+		ssize_t wsz;
+		wsz = write(fd, buf+off, sz-off);
+		if (wsz < 0 &&
+		    (errno == EAGAIN || errno == EINTR))
+			continue;
+		if (wsz < 0) {
+			rc = wsz;
+			efi_error("write failed");
 			goto out;
+		}
+		off += wsz;
 	}
-
-	rc = fcopy_file(fin, fout);
-	if (rc < 0)
-		goto out;
 
 	/* set efidp header */
 	rc = set_efidp_header(info, path);
@@ -2018,15 +1470,9 @@ fwup_set_up_update_with_buf(fwup_resource *re,
 	rc = set_up_boot_next();
 	if (rc < 0)
 		goto out;
-
-	rc = 0;
 out:
 	error = errno;
 	free_info(info);
-	if (fout)
-		fclose(fout);
-	if (fin)
-		fclose(fin);
 	if (fd >= 0)
 		close(fd);
 	errno = error;
@@ -2166,124 +1612,4 @@ fwup_print_update_info(void)
 	if (rc < 0)
 		return -1;
 	return 0;
-}
-
-static int
-check_bgrt_status(void)
-{
-	int version;
-	int type;
-	int status;
-
-	status = get_value_from_file_at_dir("/sys/firmware/acpi/bgrt",
-					    "status");
-	if (status != 1) {
-		errno = ENOSYS;
-		return -1;
-	}
-	type = get_value_from_file_at_dir("/sys/firmware/acpi/bgrt", "type");
-	if (type != 0) {
-		errno = EINVAL;
-		return -1;
-	}
-	version = get_value_from_file_at_dir("/sys/firmware/acpi/bgrt",
-					     "version");
-	if (version != 1) {
-		errno = ENOTTY;
-		return -1;
-	}
-	return 0;
-}
-
-int
-fwup_get_ux_capsule_info(uint32_t *screen_x_size, uint32_t *screen_y_size)
-{
-	static bool once = false;
-	int height, width;
-	int rc;
-
-	if (once == true) {
-		if (fwup_screen_xsize <= 0 || fwup_screen_ysize <= 0) {
-			errno = ENOSYS;
-			return -1;
-		}
-		if (screen_x_size)
-			*screen_x_size = fwup_screen_xsize;
-		if (screen_y_size)
-			*screen_y_size = fwup_screen_ysize;
-		return 0;
-	}
-
-	rc = check_bgrt_status();
-	if (rc < 0)
-		return rc;
-
-	rc = read_efifb_info(&height, &width);
-	if (rc < 0)
-		return rc;
-
-	fwup_screen_xsize = width;
-	fwup_screen_ysize = height;
-	once = true;
-	if (width <= 0 || height <= 0) {
-		errno = ENOSYS;
-		return -1;
-	}
-
-	if (screen_x_size)
-		*screen_x_size = fwup_screen_xsize;
-	if (screen_y_size)
-		*screen_y_size = fwup_screen_ysize;
-
-	return 0;
-}
-
-int
-fwup_get_debug_log(char **utf8, size_t *size)
-{
-	int rc;
-	efi_guid_t fwupdate_guid = FWUPDATE_GUID;
-	uint16_t *data;
-	size_t vsize;
-	uint32_t attributes;
-	char *udata;
-	int error;
-
-	if (!utf8 || !size) {
-		errno = EINVAL;
-		return -EINVAL;
-	}
-
-	rc = efi_get_variable(fwupdate_guid, "FWUPDATE_DEBUG_LOG",
-			      (uint8_t **)&data, &vsize, &attributes);
-	if (rc < 0)
-		return rc;
-
-	udata = ucs2_to_utf8(data, (vsize >> 1));
-	error = errno;
-	free(data);
-	errno = error;
-	if (!udata) {
-		rc = -1;
-		return rc;
-	}
-
-	*utf8 = udata;
-	*size = vsize >> 1;
-	return 0;
-}
-
-/**
- * fwup_version
- *
- * Returns the installed runtime version of libfwupdate
- *
- * Returns: integer version
- *
- * Since: 12
- */
-int
-fwup_version(void)
-{
-	return LIBFWUP_VERSION;
 }

@@ -1,11 +1,11 @@
-%global efivar_version 36-1
-%global efibootmgr_version 17-1
-%global gnu_efi_version 1:3.0.8-1
+%global efivar_version 31-1
+%global efibootmgr_version 15-1
+%global gnu_efi_version 1:3.0.5-9
 %global pesign_version 0.109-10
 
 Name:           fwupdate
-Version:        12
-Release:        5%{?dist}
+Version:        9
+Release:        8%{?dist}
 Summary:        Tools to manage UEFI firmware updates
 License:        GPLv2+
 URL:            https://github.com/rhinstaller/fwupdate
@@ -20,9 +20,21 @@ ExclusiveArch:  x86_64 aarch64
 Source0:        https://github.com/rhinstaller/fwupdate/releases/download/%{name}-%{version}/%{name}-%{version}.tar.bz2
 Source1:        securebootca.cer
 Source2:        secureboot.cer
-Patch0001: 0001-Make-some-compiler-versions-ignore-missing-field-ini.patch
-Patch0002: 0002-libfwup-set_up_boot_next-make-sure-we-check-if-our-f.patch
-Patch0003: 0003-Actually-add-fwup_version-to-our-exposed-API-list.patch
+Patch0001: 0001-Make-SUBDIRS-overrideable.patch
+Patch0002: 0002-efi-fwupdate-make-our-mult-wrapper-get-the-type-of-U.patch
+Patch0003: 0003-Nerf-SMBIOS-functions-out-of-fwupdate.patch
+Patch0004: 0004-libfwup-get_info-return-whatever-a-second-call-to-ge.patch
+Patch0005: 0005-read_file_at-don-t-initialize-saved_errno-if-we-re-n.patch
+Patch0006: 0006-fwup_set_up_update-don-t-lseek-on-our-error-path.patch
+Patch0007: 0007-add_to_boot_order-actually-always-pass-in-attributes.patch
+Patch0008: 0008-fwup_resource_iter_create-make-the-error-path-actual.patch
+Patch0009: 0009-add_to_boot_order-set-the-new-BootOrder-entry-at-the.patch
+Patch0010: 0010-fwup_set_up_update-check-lseek-s-return-value.patch
+Patch0011: 0011-put_info-try-to-limit-bounds-of-our-duplicated-devic.patch
+Patch0012: 0012-Try-harder-to-satisfy-coverity-about-the-structure-o.patch
+Patch0013: 0013-Add-coverity-makefile-bits.patch
+Patch0014: 0014-Don-t-free-alloca-d-memory.patch
+Patch0015: 0015-Fix-uninitialized-variable.patch
 
 %ifarch x86_64
 %global efiarch x64
@@ -131,40 +143,20 @@ mv fwupia32.efi $RPM_BUILD_ROOT/boot/efi/EFI/%{efidir}/
 %{_libdir}/*.so.*
 %{_datadir}/locale/en/libfwup.po
 %{_unitdir}/fwupdate-cleanup.service
-%attr(0755,root,root) %dir %{_sharedstatedir}/fwupdate/
-%config(noreplace) %ghost %{_sharedstatedir}/fwupdate/done
+%attr(0755,root,root) %dir %{_datadir}/fwupdate/
+%config(noreplace) %ghost %{_datadir}/fwupdate/done
 %attr(0755,root,root) %dir %{_libexecdir}/fwupdate/
 %{_libexecdir}/fwupdate/cleanup
 %endif
 
 %files efi
 %defattr(-,root,root,-)
-%dir %attr(0700,root,root) %dir /boot/efi
-%dir %attr(0700,root,root)/boot/efi/EFI/%{efidir}/
-%dir %attr(0700,root,root)/boot/efi/EFI/%{efidir}/fw/
-%attr(0700,root,root)/boot/efi/EFI/%{efidir}/fwup*.efi
+%attr(0700,root,root) %dir /boot/efi
+%dir /boot/efi/EFI/%{efidir}/
+%dir /boot/efi/EFI/%{efidir}/fw/
+/boot/efi/EFI/%{efidir}/fwup*.efi
 
 %changelog
-* Thu Jun 28 2018 Peter Jones <pjones@redhat.com> - 12-5
-- Make sure fwup_version() gets exported correctly.
-  Related: rhbz#1570032
-
-* Thu Jun 21 2018 Peter Jones <pjones@redhat.com> - 12-4
-- Fix permissions on /boot/efi/...
-  Related: rhbz#1496952
-
-* Thu Jun 14 2018 Peter Jones <pjones@redhat.com> - 12-3
-- Fix some more covscan nits.
-  Related: rhbz#1570032
-
-* Wed Jun 13 2018 Peter Jones <pjones@redhat.com> - 12-2
-- Fix some covscan nits.
-  Related: rhbz#1570032
-
-* Mon Jun 11 2018 Peter Jones <pjones@redhat.com> - 12-1
-- Update to fwupdate-12
-  Resolves: rhbz#1570032
-
 * Fri May 19 2017 Peter Jones <pjones@redhat.com> - 9-8
 - Hopefully the last TPS related rebuild.
   Related: rhbz#1380825

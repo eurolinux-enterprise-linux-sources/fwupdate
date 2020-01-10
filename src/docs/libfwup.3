@@ -18,19 +18,6 @@ libfwup - library to support management of system firmware updates
 \fBint \fRfwup_resource_iter_destroy\fB(fwup_resource_iter **\fIiter\fB);\fR\p
  \- iterate the list of updateable firmware images
 
-\fBint \fRfwup_set_guid\fB(\kZfwup_resource_iter *\fIiter\fB, fwup_resource **\fIre\fB,
-.ta \nZu
-	const efi_guid_t *\fIguid\fB);\fR\p
- \- manually set a guid for update
-
-\fBint \fRfwup_set_guid_forced\fB(\kZfwup_resource_iter *\fIiter\fB, fwup_resource **\fIre\fB,
-.ta \nZu
-	const efi_guid_t *\fIguid\fB, bool \fIforce\fB);\fR\p
- \- manually set a guid for update (with a force option)
-
-\fBvoid \fRfwup_resource_free\fB(fwup_resource *\fIre\fB);\fR\p
- \- free resource allocated by \fRfwup_set_guid_forced\fB()\fR
-
 \fBint \fRfwup_set_up_update\fB(fwup_resource *\fIre\fB, uint64_t \fIhw_inst\fB, int \fIinfd\fB);\fR\p
 \fBint \fRfwup_clear_status\fB(fwup_resource *\fIre\fB);\fR\p
 \fBint \fRfwup_get_guid\fB(fwup_resource *\fIre\fB, efi_guid_t **\fIguid\fB);\fR\p
@@ -43,23 +30,6 @@ libfwup - library to support management of system firmware updates
 .ta \nZu
 	uint32_t *\fIstatus\fB, time_t *\fIwhen\fB);\fR\p
  \- operate on an individual firmware entry
-
-\fBint \fRfwup_get_debug_log\fB(char **\fIutf8\fB, size_t *\fIsize\fB);\fR\p
- \- show the debug log from the last update attempt
-
-\fBvoid \fRfwup_use_existing_media_path\fB(int \fIuse_existing_media_path\fB);\fR\p
- \- instruct fwupdate on whether to reuse old capsule filenames on the ESP.
-
-\fBvoid \fRfwup_set_esp_mountpoint\fB(char *\fIpath\fB);\fR\p
- \- Override detection of the mountpoint for the ESP directory
-
-\fBconst char *\fRfwup_get_esp_mountpoint\fB(void);\fR\p
- \- Get the current mountpoint for the ESP directory
-
-\fBint \fRfwup_get_ux_capsule_info\fB(\kZuint32_t *\fIscreen_x_size\fB,
-.tz \nZu
-	uint32_t *\fIscreen_y_size\fB);\fR\p
- \- get the dimensions of the screen during boot
 .SH DESCRIPTION
 .nf
 .PP
@@ -113,23 +83,8 @@ updated to.
 	uint32_t *\fIstatus\fB, time_t *\fIwhen\fB);\fR\p
 Get the status for the last attempt to update firmware resource \fIre\fR.
 
-\fBint \fRfwup_get_debug_log\fB(char **\fIutf8\fB, size_t *\fIsize\fB);\fR\p
-Get the debug log from the last update attempt.  This allocates a buffer
-which the caller must free.
-
 \fBvoid \fRfwup_print_update_info\fB(void);\fR\p
 Print the information of firmware update status.
-
-\fBvoid \fRfwup_use_existing_media_path\fB(int \fIuse_existing_media_path\fB);\fR\p
-Instruct fwupdate on whether to reuse old capsule filenames on the ESP.
-
-\fBvoid \fRfwup_set_esp_mountpoint\fB(char *\fIpath\fB);\fR\p
-Override detection of the mountpoint for the ESP directory.
-
-\fBint \fRfwup_get_ux_capsule_info\fB(\kZuint32_t *\fIscreen_x_size\fB,
-.tz \nZu
-	uint32_t *\fIscreen_y_size\fB);\fR\p
-Get the dimensions of the screen during boot.
 .SH AUTHORS
 .nf
 Peter Jones <pjones@redhat.com>

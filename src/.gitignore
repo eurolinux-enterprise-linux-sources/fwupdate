@@ -5,11 +5,8 @@
 *.so
 *.o
 *.a
-*.E
 *.pc
 *.spec
 *.tar.*
 .*.sw?
 linux/include/fwup-version.h
-cov-int
-scan-results/

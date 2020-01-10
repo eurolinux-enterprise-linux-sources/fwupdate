@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-if [ -e "@@SHAREDSTATEDIR@@/fwupdate/done" ]; then
+if [ -e "@@DATADIR@@fwupdate/done" ]; then
 	exit 0
 fi
 
@@ -14,18 +14,16 @@ if [ -n "$BOOTNUM" ]; then
 fi
 
 
-for x in @@ESPMOUNTPOINT@@/EFI/@@EFIDIR@@/fw/fwupdate-* ; do
-	if [ "${x}" != "@@ESPMOUNTPOINT@@/EFI/@@EFIDIR@@/fw/fwupdate-*" ]; then
+for x in /boot/efi/EFI/@@EFIDIR@@/fw/fwupdate-* ; do
+	if [ "${x}" != "/boot/efi/EFI/@@EFIDIR@@/fw/fwupdate-*" ]; then
 		rm -f "${x}"
 	fi
 done
 for x in /sys/firmware/efi/efivars/fwupdate-*-0abba7dc-e516-4167-bbf5-4d9d1c739416 ; do
 	if [ "${x}" != "/sys/firmware/efi/efivars/fwupdate-*-0abba7dc-e516-4167-bbf5-4d9d1c739416" ]; then
-		if lsattr "${x}" 2>/dev/null | cut -d\  -f1 | cut -d- -f5 | grep -q i ; then
-			chattr -i "${x}"
-		fi
+		chattr -i "${x}"
 		rm -f "${x}"
 	fi
 done
 
-touch "@@SHAREDSTATEDIR@@/fwupdate/done"
+touch "@@DATADIR@@/fwupdate/done"

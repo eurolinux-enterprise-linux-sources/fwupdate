@@ -1,10 +1,10 @@
-prefix=@@PREFIX@@
-exec_prefix=@@EXEC_PREFIX@@
+prefix=/usr
+exec_prefix=/usr
 libdir=@@LIBDIR@@
-includedir=@@INCLUDEDIR@@
+includedir=/usr/include
 
 Name: fwup
 Description: Library for deployment of UEFI firmware updates.
-Version: @@FWUP_VERSION@@
-Requires: efivar >= 33
+Version: @@VERSION@@
+Requires: efivar >= 30
 Libs: -L${libdir} -lfwup
